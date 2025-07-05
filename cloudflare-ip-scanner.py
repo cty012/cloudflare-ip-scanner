@@ -93,7 +93,7 @@ def ping_ip(ip):
         # Set ping parameters based on OS
         # -c (Linux/macOS) or -n (Windows) for count
         system = platform.system().lower()
-        command = ["ping", "-n" if system == "windows" else "-c", "6", ip]
+        command = ["ping", "-n" if system == "windows" else "-c", "3", ip]
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
 
         if result.returncode == 0:
@@ -128,7 +128,7 @@ def display_results_table(results, tested_count, total_count, new_results_availa
 
     # --- Table ---
     if new_results_available:
-        header = f"{Ansi.BOLD}{Ansi.HEADER}{'Rank':<6}{'IP Address':<18}{'Location':<30}{'Latency (ms)':<10}{Ansi.ENDC}"
+        header = f"{Ansi.BOLD}{Ansi.HEADER}{'Rank':<8}{'IP Address':<18}{'Location':<30}{'Latency (ms)':<10}{Ansi.ENDC}"
         separator = "-" * 70
         lines_to_print_table.append(header)
         lines_to_print_table.append(separator)
@@ -140,7 +140,7 @@ def display_results_table(results, tested_count, total_count, new_results_availa
             latency = f"{res['latency']:.2f}"
             latency_val = res["latency"]
             color = Ansi.GREEN if latency_val < 100 else Ansi.YELLOW if latency_val < 200 else Ansi.RED
-            lines_to_print_table.append(f"{rank:<6}{ip:<18}{location:<30}{color}{latency:<10}{Ansi.ENDC}")
+            lines_to_print_table.append(f"{rank:<8}{ip:<18}{location:<30}{color}{latency:<10}{Ansi.ENDC}")
 
         display_results_table.num_lines_table = len(lines_to_print_table)
 
@@ -149,8 +149,8 @@ def display_results_table(results, tested_count, total_count, new_results_availa
     if custom_msg is None:
         progress_bar_length = 40
         progress = int((tested_count / total_count) * progress_bar_length) if total_count > 0 else 0
-        progress_bar_str = f"{Ansi.GREEN}[{'█' * progress}{'-' * (progress_bar_length - progress)}]{Ansi.ENDC}"
-        progress_line = (f"{Ansi.BOLD}{Ansi.YELLOW}Scanning Progress: {Ansi.ENDC}"
+        progress_bar_str = f"[{'█' * progress}{'-' * (progress_bar_length - progress)}]"
+        progress_line = (f"{Ansi.YELLOW}Scanning Progress: {Ansi.ENDC}"
                          f"{progress_bar_str}"
                          f"{Ansi.BOLD}{Ansi.YELLOW} {tested_count}/{total_count}{Ansi.ENDC}")
         lines_to_print_progress_bar.append(progress_line)
@@ -161,15 +161,14 @@ def display_results_table(results, tested_count, total_count, new_results_availa
     # --- Clear previous output and move the cursor up ---
     # Clear the table only if new results are available
     num_lines_to_clear = (prev_nl_table + prev_nl_progress_bar) if new_results_available else prev_nl_progress_bar
-    for _ in range(num_lines_to_clear):
-        sys.stdout.write(Ansi.CURSOR_UP)
-        sys.stdout.write(Ansi.CLEAR_LINE)
+    output_buffer = (Ansi.CURSOR_UP + Ansi.CLEAR_LINE) * num_lines_to_clear
 
     # --- Print all lines ---
-    for line in lines_to_print_table:
-        print(line)
-    for line in lines_to_print_progress_bar:
-        print(line)
+    if len(lines_to_print_table) > 0:
+        output_buffer += "\n".join(lines_to_print_table) + "\n"
+    if len(lines_to_print_progress_bar) > 0:
+        output_buffer += "\n".join(lines_to_print_progress_bar) + "\n"
+    print(output_buffer, end="", flush=True)
 
 
 def main():
@@ -217,7 +216,7 @@ def main():
             ip_obj["location"] = location
             new_results_available = True
 
-    with ThreadPoolExecutor(max_workers=50) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         future_to_ip = {executor.submit(ping_ip, ip): ip for ip in ips_to_test}
 
         for future in as_completed(future_to_ip):
@@ -255,7 +254,7 @@ def main():
                     is_finished = tested_count == total_ips
                     custom_msg = None
                     if is_finished:
-                        custom_msg = f"{Ansi.BOLD}{Ansi.YELLOW}Waiting for location lookups to finish...{Ansi.ENDC}"
+                        custom_msg = f"{Ansi.YELLOW}Waiting for location lookups to finish...{Ansi.ENDC}"
 
                     display_results_table(results, tested_count, total_ips, new_results_available, custom_msg)
                     new_results_available = False
@@ -265,15 +264,15 @@ def main():
 
     # --- Step 3: Final display and save to file ---
     with lock:
-        custom_msg = f"{Ansi.BOLD}{Ansi.GREEN}Scanning complete.{Ansi.ENDC}"
+        custom_msg = f"{Ansi.GREEN}Scanning complete.{Ansi.ENDC}"
         display_results_table(results, tested_count, total_ips, new_results_available, custom_msg)
 
     if args.out:
         with open(args.out, "w") as f:
-            f.write(f"{'Rank':<6}{'IP Address':<18}{'Location':<30}{'Latency (ms)':<10}\n")
+            f.write(f"{'Rank':<8}{'IP Address':<18}{'Location':<30}{'Latency (ms)':<10}\n")
             f.write("-" * 70 + "\n")
             for i, res in enumerate(results):
-                f.write(f"{i + 1:<6}{res['ip']:<18}{res.get('location', 'N/A'):<30}{res['latency']:.2f}\n")
+                f.write(f"{i + 1:<8}{res['ip']:<18}{res.get('location', 'N/A'):<30}{res['latency']:.2f}\n")
         print(f"{Ansi.GREEN}Results saved to {args.out}{Ansi.ENDC}")
 
 
