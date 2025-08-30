@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import ipaddress
+import math
+import platform
 import requests
 import subprocess
-import ipaddress
-import argparse
-import platform
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import time
+from typing import Optional
 
 
 # --- ANSI Escape Codes for Formatting ---
@@ -27,7 +30,7 @@ class Ansi:
     CLEAR_SCREEN_FROM_CURSOR = "\033[J"
 
 
-def get_cloudflare_ips():
+def get_cloudflare_ips() -> Optional[list[str]]:
     """
     Fetches the list of Cloudflare IPv4 CIDR ranges from their official API.
     Returns a list of CIDR strings.
@@ -46,7 +49,7 @@ def get_cloudflare_ips():
         return None
 
 
-def expand_cidrs(cidrs):
+def expand_cidrs(cidrs: list[str]) -> list[str]:
     """
     Expands a list of CIDR ranges into a list of individual IP addresses.
     For small blocks (>= 24 fixed bits), it tests all IPs.
@@ -68,7 +71,7 @@ def expand_cidrs(cidrs):
     return list(set(ips))
 
 
-def get_ip_location(ip):
+def get_ip_location(ip: str) -> str:
     """
     Fetches the physical location of an IP address using ipinfo.io,
     which is more reliable in China.
@@ -84,36 +87,61 @@ def get_ip_location(ip):
         return "Network Error"
 
 
-def ping_ip(ip):
+def ping_ip(ip: str, n_tries: int=4, timeout: int=1) -> Optional[int]:
     """
-    Pings a single IP address 4 times and returns the average latency.
+    Pings a single IP address multiple times and returns the average latency.
     Returns None if the ping fails or times out.
+
+    The ping command uses the TCP protocol to connect to the 443 port of the target IP:
+    nc -vz [ip] 443 -G [timeout]
+
+    Note: n_tries must be AT LEAST 3!
     """
     try:
-        # Set ping parameters based on OS
-        # -c (Linux/macOS) or -n (Windows) for count
+        # Set command based on OS
         system = platform.system().lower()
-        command = ["ping", "-n" if system == "windows" else "-c", "3", ip]
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        if system == "windows":
+            # TODO: Support windows
+            raise OSError("Windows is not supported")
+        else:
+            command = ["./timer.sh", "nc", "-vz", ip, "443", "-G", str(timeout)]
 
-        if result.returncode == 0:
-            output = result.stdout
-            for line in output.splitlines():
-                # macOS/Linux summary line: round-trip min/avg/max/stddev = ...
-                if "round-trip" in line or "rtt" in line:
-                    parts = line.split("=")[1].strip().split("/")
-                    return float(parts[1])  # The second part is the average
-                # Windows summary line: Minimum = Xms, Maximum = Yms, Average = Zms
-                elif "Average =" in line:
-                    avg_str = line.split("Average =")[1].strip().replace("ms", "")
-                    return float(avg_str)
+        latencies = []
+        for _ in range(n_tries):
+            result = subprocess.run(command, capture_output=True, text=True)
+            if result.returncode == 0:
+                duration_ms = int(result.stdout.strip())
+                latencies.append(duration_ms)
+            else:
+                return None
+        latencies.sort()
+
+        # Calculate the average latency
+        avg_latency = sum(latencies) / len(latencies)
+        return math.ceil(avg_latency)
+
+    except Exception:
         return None
-    except (subprocess.TimeoutExpired, Exception):
-        return None
+
+
+def to_time_str(seconds: int) -> str:
+    """Converts seconds to a human-readable time string."""
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes:02}m {seconds:02}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds:02}s"
+    else:
+        return f"{seconds}s"
 
 
 # Use a static variable inside the function to track its state
-def display_results_table(results, tested_count, total_count, new_results_available, custom_msg=None):
+def display_results_table(
+        results: list[dict], tested_count: int, total_count: int,
+        te: float, etr: float,
+        new_results_available: bool, custom_msg: str=None) -> None:
+
     """Clears the previously printed lines and displays the current results table."""
     if not hasattr(display_results_table, "num_lines_table"):
         display_results_table.num_lines_table = 0
@@ -137,10 +165,9 @@ def display_results_table(results, tested_count, total_count, new_results_availa
             rank = i + 1
             ip = res["ip"]
             location = res.get("location", "...")
-            latency = f"{res['latency']:.2f}"
-            latency_val = res["latency"]
-            color = Ansi.GREEN if latency_val < 100 else Ansi.YELLOW if latency_val < 200 else Ansi.RED
-            lines_to_print_table.append(f"{rank:<8}{ip:<18}{location:<30}{color}{latency:<10}{Ansi.ENDC}")
+            latency = res["latency"]
+            color = Ansi.GREEN if latency < 100 else Ansi.YELLOW if latency < 200 else Ansi.RED
+            lines_to_print_table.append(f"{rank:<8}{ip:<18}{location:<30}{color}{str(latency):<10}{Ansi.ENDC}")
 
         display_results_table.num_lines_table = len(lines_to_print_table)
 
@@ -150,10 +177,14 @@ def display_results_table(results, tested_count, total_count, new_results_availa
         progress_bar_length = 40
         progress = int((tested_count / total_count) * progress_bar_length) if total_count > 0 else 0
         progress_bar_str = f"[{'█' * progress}{'-' * (progress_bar_length - progress)}]"
+        te_str = to_time_str(math.ceil(te))
+        etr_str = to_time_str(math.ceil(etr))
         progress_line = (f"{Ansi.YELLOW}Scanning Progress: {Ansi.ENDC}"
                          f"{progress_bar_str}"
-                         f"{Ansi.BOLD}{Ansi.YELLOW} {tested_count}/{total_count}{Ansi.ENDC}")
+                         f"{Ansi.YELLOW} {tested_count}/{total_count}{Ansi.ENDC}")
+        time_line = f"{Ansi.YELLOW}Time elapsed: {te_str}  Estimated time remaining: {etr_str}{Ansi.ENDC}"
         lines_to_print_progress_bar.append(progress_line)
+        lines_to_print_progress_bar.append(time_line)
     else:
         lines_to_print_progress_bar.append(custom_msg)
     display_results_table.num_lines_progress_bar = len(lines_to_print_progress_bar)
@@ -216,12 +247,19 @@ def main():
             ip_obj["location"] = location
             new_results_available = True
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Time estimation
+    start_time = time.time()
+    prev_time = start_time
+    rate = 0  # seconds/item
+    alpha = 0.95
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ip = {executor.submit(ping_ip, ip): ip for ip in ips_to_test}
 
         for future in as_completed(future_to_ip):
             ip = future_to_ip[future]
             tested_count += 1
+
             try:
                 latency = future.result()
                 if latency is None:
@@ -249,6 +287,18 @@ def main():
                 pass
 
             finally:
+                # Update estimated time
+                new_time = time.time()
+                if tested_count == 1:
+                    rate = new_time - prev_time
+                else:
+                    rate = alpha * rate + (1 - alpha) * (new_time - prev_time)
+                prev_time = new_time
+
+                # Calculate time elapsed (te) and estimated time remaining (etr)
+                te = new_time - start_time
+                etr = (total_ips - tested_count) * rate
+
                 # Update display every loop
                 with lock:
                     is_finished = tested_count == total_ips
@@ -256,7 +306,7 @@ def main():
                     if is_finished:
                         custom_msg = f"{Ansi.YELLOW}Waiting for location lookups to finish...{Ansi.ENDC}"
 
-                    display_results_table(results, tested_count, total_ips, new_results_available, custom_msg)
+                    display_results_table(results, tested_count, total_ips, te, etr, new_results_available, custom_msg)
                     new_results_available = False
 
     # Wait for any outstanding location lookups to finish
@@ -276,5 +326,11 @@ def main():
         print(f"{Ansi.GREEN}Results saved to {args.out}{Ansi.ENDC}")
 
 
+def test():
+    print(ping_ip("www.baidu.com"))
+    print(ping_ip("www.google.com"))
+
+
 if __name__ == "__main__":
     main()
+    # test()
