@@ -5,6 +5,7 @@ import ipaddress
 import math
 import platform
 import requests
+import socket
 import subprocess
 import sys
 import threading
@@ -87,41 +88,35 @@ def get_ip_location(ip: str) -> str:
         return "Network Error"
 
 
-def ping_ip(ip: str, n_tries: int=4, timeout: int=1) -> Optional[int]:
+def ping_ip(ip: str, n_tries: int=4, timeout: float=1.0) -> Optional[float]:
     """
     Pings a single IP address multiple times and returns the average latency.
     Returns None if the ping fails or times out.
 
-    The ping command uses the TCP protocol to connect to the 443 port of the target IP:
-    nc -vz [ip] 443 -G [timeout]
+    The ping command uses the TCP protocol to connect to the 443 port of the target IP.
 
-    Note: n_tries must be AT LEAST 3!
+    Note: n_tries must be at least 1. 3 is the recommended minimum.
     """
-    try:
-        # Set command based on OS
-        system = platform.system().lower()
-        if system == "windows":
-            # TODO: Support windows
-            raise OSError("Windows is not supported")
-        else:
-            command = ["./timer.sh", "nc", "-vz", ip, "443", "-G", str(timeout)]
+    latencies = []
 
-        latencies = []
-        for _ in range(n_tries):
-            result = subprocess.run(command, capture_output=True, text=True)
-            if result.returncode == 0:
-                duration_ms = int(result.stdout.strip())
-                latencies.append(duration_ms)
+    for _ in range(n_tries):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+
+        start_time = time.perf_counter()
+        try:
+            if s.connect_ex((ip, 443)) == 0:
+                end_time = time.perf_counter()
+                s.shutdown(socket.SHUT_RDWR)
+                latencies.append((end_time - start_time) * 1000)
             else:
                 return None
-        latencies.sort()
+        except socket.error:
+            return None
+        finally:
+            s.close()
 
-        # Calculate the average latency
-        avg_latency = sum(latencies) / len(latencies)
-        return math.ceil(avg_latency)
-
-    except Exception:
-        return None
+    return sum(latencies) / len(latencies)
 
 
 def to_time_str(seconds: int) -> str:
@@ -165,9 +160,10 @@ def display_results_table(
             rank = i + 1
             ip = res["ip"]
             location = res.get("location", "...")
-            latency = res["latency"]
-            color = Ansi.GREEN if latency < 100 else Ansi.YELLOW if latency < 200 else Ansi.RED
-            lines_to_print_table.append(f"{rank:<8}{ip:<18}{location:<30}{color}{str(latency):<10}{Ansi.ENDC}")
+            latency = f"{res['latency']:.2f}"
+            latency_val = res["latency"]
+            color = Ansi.GREEN if latency_val < 100 else Ansi.YELLOW if latency_val < 200 else Ansi.RED
+            lines_to_print_table.append(f"{rank:<8}{ip:<18}{location:<30}{color}{latency:<10}{Ansi.ENDC}")
 
         display_results_table.num_lines_table = len(lines_to_print_table)
 
@@ -203,7 +199,7 @@ def display_results_table(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch and test Cloudflare IPs for latency.",
+    parser = argparse.ArgumentParser(description="Test Cloudflare IPs for TCP connection latency.",
                                      formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--ip-list", type=str, help="if specified, load Cloudflare IPs from the local file (comma or newline-delimited list)")
     parser.add_argument("--limit", type=int, default=20, help="display a limited number of IPs with the lowest latency (default: 20)")
@@ -315,7 +311,7 @@ def main():
     # --- Step 3: Final display and save to file ---
     with lock:
         custom_msg = f"{Ansi.GREEN}Scanning complete.{Ansi.ENDC}"
-        display_results_table(results, tested_count, total_ips, new_results_available, custom_msg)
+        display_results_table(results, tested_count, total_ips, te, etr, new_results_available, custom_msg)
 
     if args.out:
         with open(args.out, "w") as f:

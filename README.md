@@ -1,6 +1,6 @@
-# Cloudflare IP Scanner
+# Cloudflare TCP Scanner
 
-This script tests Cloudflare's IP ranges to find the one with the lowest latency from your current network location. It's a useful tool for optimizing network settings to connect to Cloudflare's network more efficiently.
+This script tests Cloudflare's IP ranges to find the one with the lowest TCP latency from your current network location. It's a useful tool for optimizing network settings to connect to Cloudflare's network more efficiently.
 
 The script fetches Cloudflare's official IP ranges, pings a sample of these IPs to measure round-trip time, and displays a real-time, sorted list of the fastest IPs.
 
@@ -36,7 +36,7 @@ Run the script from your terminal.
 This will scan the IPs and display the top 20 fastest results.
 
 ```bash
-python3 cloudflare-ip-scanner.py
+python3 cloudflare-tcp-scanner.py
 ```
 
 ### Command-Line Arguments (Optional)
@@ -51,17 +51,17 @@ python3 cloudflare-ip-scanner.py
 **Show the top 10 results:**
 
 ```bash
-./cloudflare-ip-scanner.py --limit 10
+./cloudflare-tcp-scanner.py --limit 10
 ```
 
 **Only show IPs with latency under 150ms and save to `results.txt`:**
 
 ```bash
-./cloudflare-ip-scanner.py --max-latency 150 --out results.txt
+./cloudflare-tcp-scanner.py --max-latency 150 --out results.txt
 ```
 
 **Use a local file for IP ranges:**
 
 ```bash
-./cloudflare-ip-scanner.py --ip-list ip_list.txt
+./cloudflare-tcp-scanner.py --ip-list ip_list.txt
 ```
